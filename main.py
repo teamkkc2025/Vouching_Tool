@@ -11,6 +11,28 @@ import pytesseract
  
 from PIL import Image, ImageEnhance
 import xlsxwriter
+
+# ---------------------------------------------------------
+# TESSERACT
+# ---------------------------------------------------------
+
+import toml
+
+try:
+    _cfg_path = os.path.join(os.path.dirname(__file__), "config.toml")
+    if os.path.exists(_cfg_path):
+        _cfg = toml.load(_cfg_path)
+        _tess_path = _cfg.get("tesseract", {}).get("path", "")
+        if _tess_path and os.path.exists(_tess_path):
+            pytesseract.pytesseract.tesseract_cmd = _tess_path
+    elif os.name == "nt":
+        path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+        if os.path.exists(path):
+            pytesseract.pytesseract.tesseract_cmd = path
+    pytesseract.get_tesseract_version()
+    OCR_OK = True
+except:
+    OCR_OK = False
  
  
 # ---------------------------------------------------------
