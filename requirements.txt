@@ -1,7 +1,8 @@
 streamlit
 pandas
-openpyxl
+numpy
 pdfplumber
+pytesseract
 Pillow
 xlsxwriter
-pytesseract
+openpyxl
