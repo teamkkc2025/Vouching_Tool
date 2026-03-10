@@ -2,1072 +2,880 @@ import io
 import os
 import re
 from datetime import datetime
- 
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import pdfplumber
 import pytesseract
- 
+
 from PIL import Image, ImageEnhance
 import xlsxwriter
- 
- 
+
+
 # ---------------------------------------------------------
-# PAGE CONFIG
+# PAGE CONFIG  — must be first Streamlit call
 # ---------------------------------------------------------
- 
+
 st.set_page_config(
     page_title="KKC Vouching Tool",
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded"
 )
- 
+
+# ---------------------------------------------------------
+# CSS  — injected as a single block with <link> for fonts
+# (avoids CSP issues with @import on Streamlit Cloud)
+# ---------------------------------------------------------
+
 st.markdown("""
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Nunito+Sans:wght@300;400;600;700;800;900&family=Libre+Baskerville:wght@400;700&display=swap" rel="stylesheet">
+
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Nunito+Sans:wght@300;400;600;700;800;900&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&display=swap%27);
- 
 :root {
-    --kkc-green:     #5ba632;
-    --kkc-green-mid: #6dbc3c;
-    --kkc-green-lt:  #e8f5e0;
-    --kkc-green-bar: #76b82a;
-    --white:         #ffffff;
-    --gray-50:       #f7f9f7;
-    --gray-100:      #eef2ee;
-    --gray-200:      #dde5dd;
-    --gray-400:      #9aaa9a;
-    --gray-600:      #5a6b5a;
-    --gray-800:      #2a3a2a;
-    --text:          #1c2b1c;
-    --text-mid:      #445544;
-    --text-light:    #7a8e7a;
+    --green:      #5ba632;
+    --green-mid:  #6dbc3c;
+    --green-bar:  #76b82a;
+    --green-lt:   #e8f5e0;
+    --white:      #ffffff;
+    --gray-50:    #f7f9f7;
+    --gray-100:   #eef2ee;
+    --gray-200:   #dde5dd;
+    --gray-400:   #9aaa9a;
+    --gray-600:   #5a6b5a;
+    --text:       #1c2b1c;
+    --text-mid:   #445544;
+    --text-light: #7a8e7a;
 }
- 
-*, *::before, *::after { box-sizing: border-box; }
- 
+
+/* ── Global reset ─────────────────────────────── */
 html, body,
 [data-testid="stAppViewContainer"],
-[data-testid="stMain"],
-.main {
-    background: var(--gray-50) !important;
+[data-testid="stMain"] {
+    background-color: var(--gray-50) !important;
     font-family: 'Nunito Sans', sans-serif !important;
     color: var(--text) !important;
 }
- 
-[data-testid="stHeader"] { display: none !important; }
-[data-testid="stToolbar"] { display: none !important; }
+[data-testid="stHeader"],
+[data-testid="stToolbar"],
 footer { display: none !important; }
- 
+
 .block-container {
-    padding: 0 2.5rem 3rem !important;
-    max-width: 1320px !important;
+    padding: 0 2rem 3rem !important;
+    max-width: 1300px !important;
 }
- 
-/* ── SIDEBAR ─────────────────────────────── */
+
+/* ── Sidebar ───────────────────────────────────── */
 [data-testid="stSidebar"] {
-    background: var(--white) !important;
-    border-right: 2px solid var(--kkc-green-lt) !important;
+    background-color: var(--white) !important;
+    border-right: 2px solid var(--green-lt) !important;
 }
-[data-testid="stSidebar"] .block-container { padding: 0 !important; }
- 
-.sb-topbar {
-    background: var(--kkc-green-bar);
-    padding: 0 0 0 0;
-    height: 5px;
+[data-testid="stSidebar"] > div:first-child {
+    padding-top: 0 !important;
 }
-.sb-brand {
-    padding: 22px 20px 18px;
-    border-bottom: 1px solid var(--gray-100);
+
+/* ── Buttons ───────────────────────────────────── */
+[data-testid="stButton"] > button {
+    background-color: var(--green) !important;
+    color: #fff !important;
+    font-family: 'Nunito Sans', sans-serif !important;
+    font-weight: 800 !important;
+    font-size: 14px !important;
+    border: none !important;
+    border-radius: 8px !important;
+    padding: 12px 32px !important;
+    box-shadow: 0 2px 8px rgba(91,166,50,0.3) !important;
+    transition: all 0.18s !important;
 }
-.sb-logo-text {
-    font-family: 'Nunito Sans', sans-serif;
-    font-size: 17px; font-weight: 900; letter-spacing: -0.3px;
-    color: var(--kkc-green);
-    line-height: 1;
+[data-testid="stButton"] > button:hover {
+    background-color: #4e9429 !important;
+    transform: translateY(-1px) !important;
 }
-.sb-logo-amp { color: var(--kkc-green-mid); }
-.sb-logo-sub {
-    font-size: 10px; font-weight: 400; color: var(--text-light);
-    margin-top: 3px; letter-spacing: 0.2px;
+[data-testid="stDownloadButton"] > button {
+    background-color: var(--white) !important;
+    color: var(--green) !important;
+    font-family: 'Nunito Sans', sans-serif !important;
+    font-weight: 800 !important;
+    font-size: 13px !important;
+    border: 2px solid var(--green) !important;
+    border-radius: 8px !important;
+    padding: 10px 26px !important;
 }
-.sb-logo-sub2 {
-    font-size: 9.5px; color: var(--gray-400); margin-top: 1px;
-    font-style: italic;
+[data-testid="stDownloadButton"] > button:hover {
+    background-color: var(--green-lt) !important;
 }
- 
-.sb-nav { padding: 10px 12px; }
-.sb-nav-item {
-    display: flex; align-items: center; gap: 10px;
-    padding: 10px 14px; border-radius: 7px;
-    font-size: 13px; color: var(--text-mid); font-weight: 600;
-    cursor: pointer; transition: all 0.15s; margin-bottom: 2px;
+
+/* ── Progress bar ──────────────────────────────── */
+[data-testid="stProgressBar"] > div {
+    background-color: var(--gray-100) !important;
+    border-radius: 99px !important;
+    height: 5px !important;
 }
-.sb-nav-item.active {
-    background: var(--kkc-green-lt);
-    color: var(--kkc-green);
-    border-left: 3px solid var(--kkc-green);
-    padding-left: 11px;
+[data-testid="stProgressBar"] > div > div {
+    background-color: var(--green) !important;
+    border-radius: 99px !important;
 }
-.sb-nav-item:not(.active):hover { background: var(--gray-50); }
- 
-.sb-section-title {
-    font-size: 9px; font-weight: 700; letter-spacing: 1.8px;
-    text-transform: uppercase; color: var(--gray-400);
-    padding: 16px 14px 6px;
+
+/* ── Dataframe ─────────────────────────────────── */
+[data-testid="stDataFrame"] {
+    border: 1px solid var(--gray-200) !important;
+    border-radius: 10px !important;
+    overflow: hidden !important;
+    box-shadow: 0 1px 6px rgba(0,0,0,0.04) !important;
 }
-.sb-divider { height: 1px; background: var(--gray-100); margin: 8px 14px; }
- 
-.sb-status-block {
-    margin: 10px 14px;
-    background: var(--gray-50);
-    border: 1px solid var(--gray-100);
-    border-radius: 10px; padding: 14px 16px;
+
+/* ── File uploader ─────────────────────────────── */
+[data-testid="stFileUploader"] {
+    background-color: var(--white) !important;
+    border: 2px dashed var(--gray-200) !important;
+    border-radius: 10px !important;
 }
-.sb-status-title {
-    font-size: 9px; font-weight: 700; letter-spacing: 1.5px;
-    text-transform: uppercase; color: var(--gray-400); margin-bottom: 10px;
+[data-testid="stFileUploader"]:hover {
+    border-color: var(--green) !important;
+    background-color: var(--green-lt) !important;
 }
-.sb-status-row {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 5px 0; border-bottom: 1px solid var(--gray-100); font-size: 11.5px;
+
+/* ── Labels ────────────────────────────────────── */
+label, [data-testid="stWidgetLabel"] p {
+    font-family: 'Nunito Sans', sans-serif !important;
+    font-size: 13px !important;
+    font-weight: 700 !important;
+    color: var(--text-mid) !important;
 }
-.sb-status-row:last-child { border-bottom: none; }
-.sb-status-key { color: var(--text-light); font-weight: 400; }
-.sb-status-val { font-weight: 700; font-size: 11px; color: var(--text-mid); }
-.sb-status-val.ok { color: var(--kkc-green); }
- 
-/* ── TOP HEADER BAR ────────────────────── */
-.vt-header {
+
+/* ── Spinner ───────────────────────────────────── */
+[data-testid="stSpinner"] { color: var(--green) !important; }
+
+/* ── Scrollbar ─────────────────────────────────── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: var(--gray-50); }
+::-webkit-scrollbar-thumb { background: var(--gray-200); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--green); }
+
+/* ── Custom components ─────────────────────────── */
+.kkc-topstrip {
+    background: var(--green-bar);
+    padding: 7px 16px;
+    display: flex; align-items: center; gap: 24px;
+    font-size: 11.5px; color: #fff; font-weight: 600;
+    margin: 0 -2rem 0 -2rem;
+    letter-spacing: 0.1px;
+}
+.kkc-navbar {
     background: var(--white);
-    border-bottom: 3px solid var(--kkc-green-bar);
-    padding: 0;
-    margin-bottom: 0;
-}
-.vt-topstrip {
-    background: var(--kkc-green-bar);
-    padding: 7px 0;
-    display: flex; align-items: center; justify-content: center; gap: 30px;
-    font-size: 11px; color: var(--white); font-weight: 600; letter-spacing: 0.2px;
-}
-.vt-topstrip a { color: var(--white); text-decoration: none; }
-.vt-topstrip-sep { opacity: 0.4; }
- 
-.vt-navbar {
-    background: var(--white);
+    border-bottom: 3px solid var(--green-bar);
     padding: 14px 0 12px;
+    margin: 0 -2rem 0 -2rem;
+    padding-left: 2rem; padding-right: 2rem;
     display: flex; align-items: center; gap: 20px;
 }
-.vt-brand {
-    display: flex; flex-direction: column; line-height: 1;
-}
-.vt-brand-name {
+.kkc-brand-name {
     font-family: 'Nunito Sans', sans-serif;
-    font-size: 21px; font-weight: 900; color: var(--kkc-green);
-    letter-spacing: -0.5px;
+    font-size: 22px; font-weight: 900;
+    color: var(--green); letter-spacing: -0.5px; line-height: 1;
 }
-.vt-brand-tag {
-    font-size: 10.5px; color: var(--text-light); font-weight: 400; margin-top: 2px;
+.kkc-brand-tag  { font-size: 10.5px; color: var(--text-light); margin-top: 2px; }
+.kkc-brand-fmr  { font-size: 9.5px; color: var(--gray-400); font-style: italic; margin-top: 1px; }
+.kkc-divider-v  { width: 1px; height: 38px; background: var(--gray-200); flex-shrink: 0; }
+.kkc-tool-badge {
+    background: var(--green-lt);
+    border: 1.5px solid var(--green);
+    border-radius: 8px; padding: 7px 16px;
+    font-size: 13px; font-weight: 800; color: var(--green);
 }
-.vt-brand-former {
-    font-size: 9.5px; color: var(--gray-400); font-style: italic; margin-top: 1px;
-}
-.vt-nav-divider {
-    width: 1px; height: 36px; background: var(--gray-200); flex-shrink: 0;
-}
-.vt-tool-badge {
-    background: var(--kkc-green-lt);
-    border: 1.5px solid var(--kkc-green);
-    border-radius: 7px; padding: 6px 16px;
-    font-size: 13px; font-weight: 800; color: var(--kkc-green);
-    letter-spacing: -0.2px;
-}
-.vt-tool-sub {
-    font-size: 10px; color: var(--text-light); font-weight: 400; margin-top: 2px;
-    font-family: 'Nunito Sans', sans-serif;
-}
-.vt-status-pill {
+.kkc-tool-sub   { font-size: 10px; color: var(--text-light); margin-top: 3px; }
+.kkc-pill {
     margin-left: auto;
-    background: var(--kkc-green-lt);
-    border: 1px solid var(--kkc-green);
+    background: var(--green-lt);
+    border: 1px solid var(--green);
     border-radius: 20px; padding: 5px 16px;
-    font-size: 10.5px; font-weight: 700; color: var(--kkc-green);
+    font-size: 10.5px; font-weight: 700; color: var(--green);
     display: flex; align-items: center; gap: 6px;
 }
-.vt-status-dot {
+.kkc-dot {
     width: 7px; height: 7px; border-radius: 50%;
-    background: var(--kkc-green);
+    background: var(--green);
+    display: inline-block;
     animation: blink 1.8s ease-in-out infinite;
 }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
- 
-/* ── SECTION LABELS ──────────────────── */
-.vt-section {
+
+.kkc-section {
     font-size: 9.5px; font-weight: 700; letter-spacing: 2px;
-    text-transform: uppercase; color: var(--kkc-green);
+    text-transform: uppercase; color: var(--green);
     margin: 28px 0 14px;
     display: flex; align-items: center; gap: 12px;
 }
-.vt-section::after {
-    content: ''; flex: 1; height: 1.5px; background: var(--kkc-green-lt);
+.kkc-section::after {
+    content: ''; flex: 1; height: 1.5px; background: var(--green-lt);
 }
- 
-/* ── INFO BOX ────────────────────────── */
-.vt-infobox {
-    background: var(--kkc-green-lt);
-    border: 1px solid var(--kkc-green);
-    border-left: 4px solid var(--kkc-green);
+
+.kkc-infobox {
+    background: var(--green-lt);
+    border: 1px solid var(--green);
+    border-left: 4px solid var(--green);
     border-radius: 0 9px 9px 0;
-    padding: 14px 18px; font-size: 12.5px; color: var(--gray-800);
+    padding: 14px 18px; font-size: 12.5px; color: var(--text);
     display: flex; gap: 12px; align-items: flex-start;
-    margin-bottom: 24px; line-height: 1.65;
+    margin-bottom: 22px; line-height: 1.65;
 }
- 
-/* ── UPLOAD ──────────────────────────── */
-.vt-upload-label {
+
+.kkc-file-ok {
+    font-size: 10.5px; font-weight: 700; color: var(--green);
+    background: var(--green-lt); border: 1px solid var(--green);
+    padding: 7px 14px; border-radius: 7px; margin-top: 8px;
+}
+.kkc-upload-label {
     font-size: 12px; font-weight: 700; color: var(--text-mid);
     margin-bottom: 8px; display: flex; align-items: center; gap: 8px;
 }
-.vt-upload-label .badge {
+.kkc-badge {
     font-size: 9px; background: var(--gray-100); color: var(--text-light);
     padding: 2px 8px; border-radius: 4px; font-weight: 600;
     text-transform: uppercase; letter-spacing: 0.5px;
 }
-.vt-file-ok {
-    font-size: 10.5px; font-weight: 700; color: var(--kkc-green);
-    background: var(--kkc-green-lt); border: 1px solid var(--kkc-green);
-    padding: 7px 14px; border-radius: 7px; margin-top: 8px;
-    display: flex; align-items: center; gap: 6px;
-}
- 
-[data-testid="stFileUploader"] {
-    background: var(--white) !important;
-    border: 2px dashed var(--gray-200) !important;
-    border-radius: 9px !important;
-    transition: all 0.2s !important;
-}
-[data-testid="stFileUploader"]:hover {
-    border-color: var(--kkc-green) !important;
-    background: var(--kkc-green-lt) !important;
-}
-[data-testid="stFileUploaderDropzone"] {
-    background: transparent !important; border: none !important;
-}
- 
-/* ── METRICS ─────────────────────────── */
-.vt-metrics {
+
+/* Metrics */
+.kkc-metrics {
     display: grid; grid-template-columns: repeat(4, 1fr);
     gap: 14px; margin: 6px 0 28px;
 }
-.vt-metric {
+.kkc-metric {
     background: var(--white);
     border: 1px solid var(--gray-200);
     border-top: 4px solid transparent;
     border-radius: 10px; padding: 22px 20px 18px;
-    position: relative;
     transition: box-shadow 0.2s, transform 0.2s;
 }
-.vt-metric:hover {
-    box-shadow: 0 6px 24px rgba(91,166,50,0.1);
-    transform: translateY(-2px);
-}
-.vt-metric.matched  { border-top-color: var(--kkc-green); }
-.vt-metric.mismatch { border-top-color: #e07b00; }
-.vt-metric.missing  { border-top-color: #d13030; }
-.vt-metric.duplicate{ border-top-color: #b8860b; }
- 
-.vt-metric-label {
+.kkc-metric:hover { box-shadow: 0 6px 24px rgba(91,166,50,0.1); transform: translateY(-2px); }
+.kkc-metric.matched   { border-top-color: var(--green); }
+.kkc-metric.mismatch  { border-top-color: #e07b00; }
+.kkc-metric.missing   { border-top-color: #d13030; }
+.kkc-metric.duplicate { border-top-color: #b8860b; }
+.kkc-metric-label {
     font-size: 9.5px; font-weight: 700; letter-spacing: 1.5px;
     text-transform: uppercase; color: var(--text-light); margin-bottom: 10px;
 }
-.vt-metric-value {
+.kkc-metric-value {
     font-family: 'Libre Baskerville', serif;
-    font-size: 48px; font-weight: 700; line-height: 1;
-    letter-spacing: -2px;
+    font-size: 48px; font-weight: 700; line-height: 1; letter-spacing: -2px;
 }
-.vt-metric.matched  .vt-metric-value { color: var(--kkc-green); }
-.vt-metric.mismatch .vt-metric-value { color: #e07b00; }
-.vt-metric.missing  .vt-metric-value { color: #d13030; }
-.vt-metric.duplicate .vt-metric-value { color: #b8860b; }
-.vt-metric-sub { font-size: 11px; color: var(--text-light); margin-top: 7px; font-weight: 400; }
- 
-/* ── MISMATCH ALERT ─────────────────── */
-.vt-alert {
-    border-radius: 9px; padding: 16px 20px;
-    font-size: 12.5px; display: flex; gap: 14px;
-    align-items: flex-start; margin-bottom: 24px; line-height: 1.6;
-}
-.vt-alert.warn {
-    background: #fff8f0;
-    border: 1px solid #f5c57a;
+.kkc-metric.matched   .kkc-metric-value { color: var(--green); }
+.kkc-metric.mismatch  .kkc-metric-value { color: #e07b00; }
+.kkc-metric.missing   .kkc-metric-value { color: #d13030; }
+.kkc-metric.duplicate .kkc-metric-value { color: #b8860b; }
+.kkc-metric-sub { font-size: 11px; color: var(--text-light); margin-top: 7px; }
+
+/* Alert */
+.kkc-alert-warn {
+    background: #fff8f0; border: 1px solid #f5c57a;
     border-left: 4px solid #e07b00;
-    color: #6b3a00;
+    border-radius: 0 9px 9px 0;
+    padding: 16px 20px; font-size: 12.5px;
+    color: #6b3a00; margin-bottom: 24px; line-height: 1.6;
 }
-.vt-alert.info {
-    background: var(--kkc-green-lt);
-    border: 1px solid var(--kkc-green);
-    border-left: 4px solid var(--kkc-green);
-    color: var(--gray-800);
+.kkc-mismatch-table {
+    width: 100%; margin-top: 12px; border-collapse: collapse; font-size: 11.5px;
 }
- 
-.mismatch-table {
-    width: 100%; margin-top: 12px; border-collapse: collapse;
-    font-size: 11.5px;
-}
-.mismatch-table th {
+.kkc-mismatch-table th {
     text-align: left; font-size: 9px; font-weight: 700;
     letter-spacing: 1.3px; text-transform: uppercase;
     color: #a06020; padding: 4px 10px 8px 0;
 }
-.mismatch-table td {
-    padding: 6px 10px 6px 0;
-    border-top: 1px solid #fde8c8;
-}
-.mismatch-table tr:first-child td { border-top: none; }
-.val-reg  { color: #d13030; font-weight: 700; }
-.val-doc  { color: var(--kkc-green); font-weight: 700; }
-.val-diff { color: #e07b00; font-weight: 700; }
- 
-/* ── BUTTONS ─────────────────────────── */
-[data-testid="stButton"] > button {
-    background: var(--kkc-green) !important;
-    color: var(--white) !important;
-    font-family: 'Nunito Sans', sans-serif !important;
-    font-size: 13.5px !important; font-weight: 800 !important;
-    border: none !important; border-radius: 8px !important;
-    padding: 12px 34px !important;
-    box-shadow: 0 2px 8px rgba(91,166,50,0.3) !important;
-    transition: all 0.18s !important;
-    letter-spacing: 0.2px !important;
-}
-[data-testid="stButton"] > button:hover {
-    background: #4e9429 !important;
-    transform: translateY(-1px) !important;
-    box-shadow: 0 4px 14px rgba(91,166,50,0.4) !important;
-}
-[data-testid="stDownloadButton"] > button {
-    background: var(--white) !important;
-    color: var(--kkc-green) !important;
-    font-family: 'Nunito Sans', sans-serif !important;
-    font-weight: 800 !important; font-size: 13px !important;
-    border: 2px solid var(--kkc-green) !important;
-    border-radius: 8px !important; padding: 11px 28px !important;
-    transition: all 0.18s !important;
-}
-[data-testid="stDownloadButton"] > button:hover {
-    background: var(--kkc-green-lt) !important;
-}
- 
-/* ── PROGRESS ─────────────────────────── */
-[data-testid="stProgressBar"] > div {
-    background: var(--gray-100) !important;
-    border-radius: 99px !important; height: 5px !important;
-}
-[data-testid="stProgressBar"] > div > div {
-    background: var(--kkc-green) !important;
-    border-radius: 99px !important;
-}
- 
-/* ── TABLE ───────────────────────────── */
-[data-testid="stDataFrame"] {
-    border: 1px solid var(--gray-200) !important;
-    border-radius: 10px !important; overflow: hidden !important;
-    box-shadow: 0 1px 6px rgba(0,0,0,0.04) !important;
-}
- 
-/* ── MISC ─────────────────────────────── */
-.vt-divider { height: 1px; background: var(--gray-100); margin: 24px 0; }
-.vt-result-head {
+.kkc-mismatch-table td { padding: 6px 10px 6px 0; border-top: 1px solid #fde8c8; }
+.kkc-mismatch-table tr:first-child td { border-top: none; }
+
+/* Result header */
+.kkc-result-head {
     font-size: 16px; font-weight: 800; color: var(--text);
     letter-spacing: -0.3px; margin: 4px 0 16px;
     display: flex; align-items: center; gap: 12px;
 }
-.vt-result-head .count-tag {
+.kkc-count-tag {
     font-size: 10px; font-weight: 700;
-    background: var(--kkc-green-lt); color: var(--kkc-green);
-    border: 1px solid var(--kkc-green);
+    background: var(--green-lt); color: var(--green);
+    border: 1px solid var(--green);
     padding: 3px 12px; border-radius: 20px;
 }
-.vt-preview-meta { font-size: 10.5px; color: var(--text-light); margin-top: 6px; }
-.vt-proc-label   { font-size: 11px; color: var(--text-light); margin-bottom: 8px; }
-.vt-proc-done    { font-size: 11px; color: var(--kkc-green); font-weight: 700; }
-.vt-timestamp    { font-size: 10.5px; color: var(--text-light); padding-top: 11px; }
- 
-.vt-empty { text-align: center; padding: 72px 24px; }
-.vt-empty-icon { font-size: 52px; margin-bottom: 16px; }
-.vt-empty-title {
-    font-size: 17px; font-weight: 800; color: var(--gray-400); margin-bottom: 8px;
+.kkc-divider { height: 1px; background: var(--gray-100); margin: 24px 0; }
+.kkc-preview-meta { font-size: 10.5px; color: var(--text-light); margin-top: 6px; }
+.kkc-proc-label   { font-size: 11px; color: var(--text-light); margin-bottom: 8px; }
+.kkc-proc-done    { font-size: 11px; color: var(--green); font-weight: 700; }
+.kkc-timestamp    { font-size: 10.5px; color: var(--text-light); padding-top: 11px; }
+.kkc-footer {
+    background: var(--white); border-top: 1px solid var(--gray-100);
+    padding: 14px 0; text-align: center;
+    font-size: 11px; color: var(--text-light); margin-top: 48px;
 }
-.vt-empty-sub { font-size: 11.5px; color: var(--gray-200); }
- 
-/* ── FOOTER ─────────────────────────── */
-.vt-footer {
-    background: var(--white);
-    border-top: 1px solid var(--gray-100);
-    padding: 14px 0;
-    text-align: center;
-    font-size: 11px; color: var(--text-light);
-    margin-top: 48px;
-}
-.vt-footer strong { color: var(--kkc-green); }
- 
-label, [data-testid="stWidgetLabel"] {
-    font-family: 'Nunito Sans', sans-serif !important;
-    font-size: 13px !important; color: var(--text-mid) !important; font-weight: 700 !important;
-}
-[data-testid="stCaptionContainer"] { font-size: 11px !important; color: var(--text-light) !important; }
-h2, h3 { font-family: 'Nunito Sans', sans-serif !important; color: var(--text) !important; font-weight: 800 !important; }
-[data-testid="stSpinner"] { color: var(--kkc-green) !important; }
- 
-::-webkit-scrollbar { width: 5px; height: 5px; }
-::-webkit-scrollbar-track { background: var(--gray-50); }
-::-webkit-scrollbar-thumb { background: var(--gray-200); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--kkc-green); }
+.kkc-empty { text-align: center; padding: 72px 24px; }
+.kkc-empty-icon  { font-size: 52px; margin-bottom: 16px; }
+.kkc-empty-title { font-size: 17px; font-weight: 800; color: var(--gray-400); margin-bottom: 8px; }
+.kkc-empty-sub   { font-size: 11.5px; color: var(--gray-200); }
+
+/* Sidebar custom */
+.sb-topbar  { background: var(--green-bar); height: 5px; margin: 0; }
+.sb-brand   { padding: 20px 18px 16px; border-bottom: 1px solid var(--gray-100); }
+.sb-name    { font-family:'Nunito Sans',sans-serif; font-size:17px; font-weight:900; color:var(--green); letter-spacing:-0.3px; line-height:1; }
+.sb-sub     { font-size:10px; color:var(--text-light); margin-top:3px; }
+.sb-fmr     { font-size:9.5px; color:var(--gray-400); font-style:italic; margin-top:1px; }
+.sb-sec     { font-size:9px; font-weight:700; letter-spacing:1.8px; text-transform:uppercase; color:var(--gray-400); padding:14px 14px 6px; }
+.sb-nav     { padding:6px 10px; }
+.sb-item    { display:flex; align-items:center; gap:10px; padding:9px 12px; border-radius:7px; font-size:13px; color:var(--text-mid); font-weight:600; margin-bottom:2px; }
+.sb-item.active { background:var(--green-lt); color:var(--green); border-left:3px solid var(--green); padding-left:9px; font-weight:800; }
+.sb-hr      { height:1px; background:var(--gray-100); margin:8px 14px; }
+.sb-block   { margin:8px 14px; background:var(--gray-50); border:1px solid var(--gray-100); border-radius:10px; padding:14px; }
+.sb-block-title { font-size:9px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:var(--gray-400); margin-bottom:10px; }
+.sb-row     { display:flex; justify-content:space-between; align-items:center; padding:5px 0; border-bottom:1px solid var(--gray-100); font-size:11.5px; }
+.sb-row:last-child { border-bottom:none; }
+.sb-key     { color:var(--text-light); }
+.sb-val     { font-weight:700; font-size:11px; color:var(--text-mid); }
+.sb-val.ok  { color:var(--green); }
 </style>
 """, unsafe_allow_html=True)
- 
- 
+
+
 # ---------------------------------------------------------
 # SIDEBAR
 # ---------------------------------------------------------
- 
+
 with st.sidebar:
     st.markdown("""
     <div class="sb-topbar"></div>
     <div class="sb-brand">
-        <div class="sb-logo-text">kkc <span class="sb-logo-amp">&</span> associates llp</div>
-        <div class="sb-logo-sub">Chartered Accountants</div>
-        <div class="sb-logo-sub2">(Formerly Khimji Kunverji & Co LLP)</div>
+        <div class="sb-name">kkc &amp; associates llp</div>
+        <div class="sb-sub">Chartered Accountants</div>
+        <div class="sb-fmr">(Formerly Khimji Kunverji &amp; Co LLP)</div>
     </div>
- 
-    <div class="sb-section-title">Navigation</div>
+    <div class="sb-sec">Navigation</div>
     <div class="sb-nav">
-        <div class="sb-nav-item active">🔍&nbsp; Vouching Engine</div>
-        <div class="sb-nav-item">📊&nbsp; Analytics</div>
-        <div class="sb-nav-item">🗂️&nbsp; Report History</div>
-        <div class="sb-nav-item">⚙️&nbsp; Settings</div>
+        <div class="sb-item active">🔍&nbsp; Vouching Engine</div>
+        <div class="sb-item">📊&nbsp; Analytics</div>
+        <div class="sb-item">🗂️&nbsp; Report History</div>
+        <div class="sb-item">⚙️&nbsp; Settings</div>
     </div>
- 
-    <div class="sb-divider"></div>
-    <div class="sb-section-title">Engine Status</div>
-    <div class="sb-status-block">
-        <div class="sb-status-row">
-            <span class="sb-status-key">OCR Engine</span>
-            <span class="sb-status-val ok">● Active</span>
-        </div>
-        <div class="sb-status-row">
-            <span class="sb-status-key">PDF Parser</span>
-            <span class="sb-status-val ok">● Active</span>
-        </div>
-        <div class="sb-status-row">
-            <span class="sb-status-key">Match Algorithm</span>
-            <span class="sb-status-val">v4.0</span>
-        </div>
-        <div class="sb-status-row">
-            <span class="sb-status-key">Amount Tolerance</span>
-            <span class="sb-status-val">± ₹0.50</span>
-        </div>
-        <div class="sb-status-row">
-            <span class="sb-status-key">ID Matching</span>
-            <span class="sb-status-val ok">Enabled</span>
-        </div>
+    <div class="sb-hr"></div>
+    <div class="sb-sec">Engine Status</div>
+    <div class="sb-block">
+        <div class="sb-row"><span class="sb-key">OCR Engine</span><span class="sb-val ok">● Active</span></div>
+        <div class="sb-row"><span class="sb-key">PDF Parser</span><span class="sb-val ok">● Active</span></div>
+        <div class="sb-row"><span class="sb-key">Algorithm</span><span class="sb-val">v4.0</span></div>
+        <div class="sb-row"><span class="sb-key">Tolerance</span><span class="sb-val">± ₹0.50</span></div>
+        <div class="sb-row"><span class="sb-key">ID Matching</span><span class="sb-val ok">Enabled</span></div>
     </div>
- 
-    <div style="position:absolute;bottom:16px;left:0;right:0;text-align:center;">
-        <div style="font-size:10px;color:#ccc;">
-            © 2025 KKC & Associates LLP
-        </div>
+    <div style="padding:20px 14px 0;font-size:10px;color:#ccc;text-align:center;">
+        © 2025 KKC &amp; Associates LLP
     </div>
     """, unsafe_allow_html=True)
- 
- 
+
+
 # ---------------------------------------------------------
 # TESSERACT
 # ---------------------------------------------------------
- 
+
 try:
     if os.name == "nt":
-        path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-        if os.path.exists(path):
-            pytesseract.pytesseract.tesseract_cmd = path
+        p = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+        if os.path.exists(p):
+            pytesseract.pytesseract.tesseract_cmd = p
     pytesseract.get_tesseract_version()
     OCR_OK = True
-except:
+except Exception:
     OCR_OK = False
- 
- 
+
+
 # ---------------------------------------------------------
-# OCR
+# OCR helpers
 # ---------------------------------------------------------
- 
+
 def ocr_image(img):
     try:
         return pytesseract.image_to_string(img, config="--psm 6 --oem 3")
-    except:
+    except Exception:
         return ""
- 
+
 def preprocess(img):
     gray = img.convert("L")
     gray = ImageEnhance.Contrast(gray).enhance(2)
     gray = gray.resize((gray.width * 2, gray.height * 2))
     return gray
- 
- 
+
+
 # ---------------------------------------------------------
-# AMOUNT EXTRACTION (prioritised)
+# Amount extraction (prioritised grand-total first)
 # ---------------------------------------------------------
- 
+
 def extract_amounts_with_context(text):
     raw = text.replace(",", "")
     results = []
- 
-    p1_patterns = [
-        r"(?:grand\s+total|total\s+amount|invoice\s+total|amount\s+due|net\s+payable)"
-        r"[\s:₹Rs\.]*(\d+(?:\.\d{1,2})?)",
+
+    p1 = [
+        r"(?:grand\s+total|total\s+amount|invoice\s+total|amount\s+due|net\s+payable)[\s:₹Rs\.]*(\d+(?:\.\d{1,2})?)",
         r"(?:total)[^\n₹\d]{0,8}(?:₹|rs\.?|inr)?\s*(\d{4,}(?:\.\d{1,2})?)",
     ]
-    for p in p1_patterns:
-        for m in re.findall(p, raw, re.IGNORECASE):
+    for pat in p1:
+        for m in re.findall(pat, raw, re.IGNORECASE):
             try:
                 v = float(m)
                 if 1 <= v <= 10_000_000:
-                    results.append({"amount": round(v, 2), "label": "Grand Total", "priority": 1})
-            except:
+                    results.append({"amount": round(v, 2), "priority": 1})
+            except Exception:
                 pass
- 
-    p2_patterns = [
-        r"(?:sub\s*total|taxable|basic|consultancy|professional\s+fees?)"
-        r"[\s:₹Rs\.]*(\d+(?:\.\d{1,2})?)",
+
+    p2 = [
+        r"(?:sub\s*total|taxable|basic|consultancy|professional\s+fees?)[\s:₹Rs\.]*(\d+(?:\.\d{1,2})?)",
         r"(?:₹|rs\.?|inr)\s*(\d+(?:\.\d{1,2})?)",
     ]
-    for p in p2_patterns:
-        for m in re.findall(p, raw, re.IGNORECASE):
+    for pat in p2:
+        for m in re.findall(pat, raw, re.IGNORECASE):
             try:
                 v = float(m)
                 if 1 <= v <= 10_000_000:
-                    results.append({"amount": round(v, 2), "label": "Line Item", "priority": 2})
-            except:
+                    results.append({"amount": round(v, 2), "priority": 2})
+            except Exception:
                 pass
- 
+
     for m in re.findall(r"\b(\d{4,7}(?:\.\d{1,2})?)\b", raw):
         try:
             v = float(m)
             if 1 <= v <= 10_000_000:
-                results.append({"amount": round(v, 2), "label": "Number", "priority": 3})
-        except:
+                results.append({"amount": round(v, 2), "priority": 3})
+        except Exception:
             pass
- 
+
     seen = {}
     for r in results:
         k = r["amount"]
         if k not in seen or r["priority"] < seen[k]["priority"]:
             seen[k] = r
     return list(seen.values())
- 
-def extract_amounts(text):
-    return [r["amount"] for r in extract_amounts_with_context(text)]
- 
- 
+
+
 # ---------------------------------------------------------
-# INVOICE ID EXTRACTION
+# Invoice ID extraction
 # ---------------------------------------------------------
- 
+
 def extract_invoice_ids(text):
     ids = set()
-    patterns = [
+    for pat in [
         r"invoice\s*(?:no\.?|#|number)?\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]{3,30})",
         r"(?:bill|ref|receipt|voucher)\s*(?:no\.?|#)?\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]{3,30})",
         r"\b([A-Z]{2,6}/\d{2}-\d{2}/\d{4,6})\b",
         r"\b([A-Z]{2,6}-\d{4,8})\b",
-    ]
-    for p in patterns:
-        for m in re.findall(p, text, re.IGNORECASE):
+    ]:
+        for m in re.findall(pat, text, re.IGNORECASE):
             ids.add(m.strip().upper())
     return ids
- 
- 
+
+
 # ---------------------------------------------------------
-# VENDOR DETECTION
+# Vendor detection
 # ---------------------------------------------------------
- 
+
 def detect_vendor(text):
-    keywords = [
-        "uber", "ola", "rapido",
-        "zomato", "swiggy", "restaurant", "cafe",
-        "amazon", "flipkart",
-        "airtel", "jio", "bsnl", "vodafone",
-        "hotel", "lodge",
-    ]
-    t = text.lower()
-    for v in keywords:
-        if v in t:
-            return v
-    lines = [l.strip() for l in text.split("\n") if len(l.strip()) > 4][:5]
-    for l in lines:
-        if any(w in l.lower() for w in ["ltd", "llp", "pvt", "inc", "co.", "corp"]):
-            return l[:60]
+    for kw in ["uber","ola","rapido","zomato","swiggy","restaurant","cafe",
+                "amazon","flipkart","airtel","jio","bsnl","vodafone","hotel","lodge"]:
+        if kw in text.lower():
+            return kw
+    for line in [l.strip() for l in text.split("\n") if len(l.strip()) > 4][:5]:
+        if any(w in line.lower() for w in ["ltd","llp","pvt","inc","co.","corp"]):
+            return line[:60]
     return None
- 
- 
+
+
 # ---------------------------------------------------------
-# PROCESS FILES
+# File processors
 # ---------------------------------------------------------
- 
-def process_image(file_bytes, name):
-    img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-    img = preprocess(img)
+
+def process_image(fb, name):
+    img = preprocess(Image.open(io.BytesIO(fb)).convert("RGB"))
     text = ocr_image(img)
     amts = extract_amounts_with_context(text)
-    return {"name": name, "amounts_detail": amts, "amounts": [a["amount"] for a in amts],
-            "invoice_ids": extract_invoice_ids(text), "vendor": detect_vendor(text), "text": text}
- 
-def process_pdf(file_bytes, name):
+    return {"name": name, "amounts_detail": amts,
+            "amounts": [a["amount"] for a in amts],
+            "invoice_ids": extract_invoice_ids(text),
+            "vendor": detect_vendor(text), "text": text}
+
+def process_pdf(fb, name):
     text = ""
     try:
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            for p in pdf.pages[:5]:
-                text += (p.extract_text() or "") + "\n"
-    except:
+        with pdfplumber.open(io.BytesIO(fb)) as pdf:
+            for pg in pdf.pages[:5]:
+                text += (pg.extract_text() or "") + "\n"
+    except Exception:
         pass
     amts = extract_amounts_with_context(text)
-    return {"name": name, "amounts_detail": amts, "amounts": [a["amount"] for a in amts],
-            "invoice_ids": extract_invoice_ids(text), "vendor": detect_vendor(text), "text": text}
- 
-def process_file(file_bytes, name):
-    ext = name.split(".")[-1].lower()
-    if ext == "pdf":
-        return process_pdf(file_bytes, name)
-    return process_image(file_bytes, name)
- 
- 
+    return {"name": name, "amounts_detail": amts,
+            "amounts": [a["amount"] for a in amts],
+            "invoice_ids": extract_invoice_ids(text),
+            "vendor": detect_vendor(text), "text": text}
+
+def process_file(fb, name):
+    return process_pdf(fb, name) if name.lower().endswith(".pdf") else process_image(fb, name)
+
+
 # ---------------------------------------------------------
-# MATCHING LOGIC (v4)
+# Matching engine v4
 # ---------------------------------------------------------
- 
-AMOUNT_TOLERANCE = 0.50
- 
-def best_amount_from_doc(doc):
+
+TOLERANCE = 0.50
+
+def best_amount(doc):
     if not doc["amounts_detail"]:
         return None
     return sorted(doc["amounts_detail"], key=lambda x: x["priority"])[0]["amount"]
- 
-def amount_match_result(reg_amt, doc):
+
+def amount_result(reg_amt, doc):
     try:
         ra = float(reg_amt)
         if np.isnan(ra) or np.isinf(ra):
             return "not_found", None, None
-    except:
+    except Exception:
         return "not_found", None, None
-    doc_amt = best_amount_from_doc(doc)
-    if doc_amt is None:
+    da = best_amount(doc)
+    if da is None:
         return "not_found", None, None
-    diff = abs(ra - doc_amt)
-    if diff <= AMOUNT_TOLERANCE:
-        return "exact", doc_amt, diff
-    return "mismatch", doc_amt, diff
- 
+    diff = abs(ra - da)
+    return ("exact" if diff <= TOLERANCE else "mismatch"), da, diff
+
 def id_match(report_id, doc):
     rid = str(report_id).strip().upper()
     if not rid:
         return False
     if rid in doc["text"].upper():
         return True
-    for did in doc["invoice_ids"]:
-        if rid == did or rid in did or did in rid:
-            return True
-    return False
- 
-def vendor_match_score(reg_vendor, doc):
+    return any(rid == d or rid in d or d in rid for d in doc["invoice_ids"])
+
+def vendor_score(reg_vendor, doc):
     rv = str(reg_vendor).lower().strip()
-    dv = str(doc["vendor"] or "").lower().strip()
+    dv = str(doc["vendor"] or "").lower()
     text = doc["text"].lower()
     if not rv:
         return 0
-    rv_tokens = set(rv.replace("&", " ").replace(".", " ").split())
-    score = 0
-    for tok in rv_tokens:
-        if len(tok) > 2 and tok in text:
-            score += 1
-    if dv and rv and (rv in dv or dv in rv):
+    tokens = set(rv.replace("&", " ").replace(".", " ").split())
+    score = sum(1 for t in tokens if len(t) > 2 and t in text)
+    if dv and (rv in dv or dv in rv):
         score += 3
     return score
- 
+
 def run_vouching(df, docs):
-    results = []
-    used = set()
- 
-    for i, row in df.iterrows():
-        amount    = row["Expense Amount"]
-        vendor    = row["Vendor"]
-        category  = row["Category"]
-        report_id = row["ExpenseReport ID"]
- 
+    results, used = [], set()
+    for _, row in df.iterrows():
+        amount, vendor = row["Expense Amount"], row["Vendor"]
+        category, report_id = row["Category"], row["ExpenseReport ID"]
+
         candidates = []
         for d in docs:
-            id_matched = id_match(report_id, d)
-            vend_score = vendor_match_score(vendor, d)
-            amt_status, doc_amt, diff = amount_match_result(amount, d)
-            score = 0
-            if id_matched: score += 20
-            score += min(vend_score, 5)
-            if amt_status == "exact": score += 10
-            elif amt_status == "mismatch": score += 3
-            candidates.append({"doc": d, "score": score, "id_matched": id_matched,
-                                "amt_status": amt_status, "doc_amt": doc_amt, "diff": diff})
- 
+            idm = id_match(report_id, d)
+            vs  = vendor_score(vendor, d)
+            ast, da, diff = amount_result(amount, d)
+            sc  = (20 if idm else 0) + min(vs, 5) + (10 if ast == "exact" else 3 if ast == "mismatch" else 0)
+            candidates.append({"doc": d, "score": sc, "idm": idm, "ast": ast, "da": da, "diff": diff})
+
         candidates.sort(key=lambda x: -x["score"])
         best = candidates[0] if candidates and candidates[0]["score"] > 0 else None
- 
+
         try:
-            amt_val = float(amount)
-            if np.isnan(amt_val) or np.isinf(amt_val):
-                amt_val = 0.0
-        except:
-            amt_val = 0.0
- 
+            av = float(amount)
+            av = 0.0 if (np.isnan(av) or np.isinf(av)) else av
+        except Exception:
+            av = 0.0
+
         if best is None:
-            status = "MISSING_DOC"
-            matched_file = "-"; doc_amount = "-"; amount_diff = "-"; confidence = "0/35"
+            status, mf, da_str, diff_str, conf = "MISSING_DOC", "-", "-", "-", "0/35"
         else:
-            matched_file = best["doc"]["name"]
-            doc_amount   = f"₹{best['doc_amt']:,.2f}" if best["doc_amt"] is not None else "-"
-            amount_diff  = f"₹{best['diff']:,.2f}"    if best["diff"]    is not None else "-"
-            confidence   = f"{best['score']}/35"
-            if matched_file in used:
+            mf       = best["doc"]["name"]
+            da_str   = f"₹{best['da']:,.2f}" if best["da"]   is not None else "-"
+            diff_str = f"₹{best['diff']:,.2f}" if best["diff"] is not None else "-"
+            conf     = f"{best['score']}/35"
+            if mf in used:
                 status = "DUPLICATE_RECEIPT"
-            elif best["amt_status"] == "exact":
+            elif best["ast"] == "exact":
                 status = "MATCHED"
-            elif best["amt_status"] == "mismatch":
+            elif best["ast"] == "mismatch":
                 status = "AMOUNT_MISMATCH"
             else:
-                status = "MATCHED" if best["id_matched"] else "MISSING_DOC"
+                status = "MATCHED" if best["idm"] else "MISSING_DOC"
             if status != "DUPLICATE_RECEIPT":
-                used.add(matched_file)
- 
+                used.add(mf)
+
         results.append({
             "Report ID":       str(report_id),
-            "Register Amount": amt_val,
-            "Document Amount": doc_amount,
-            "Difference":      amount_diff,
+            "Register Amount": av,
+            "Document Amount": da_str,
+            "Difference":      diff_str,
             "Vendor":          str(vendor),
             "Category":        str(category),
-            "Matched File":    matched_file,
-            "ID Match":        "✓" if (best and best["id_matched"]) else "✗",
-            "Confidence":      confidence,
+            "Matched File":    mf,
+            "ID Match":        "✓" if (best and best["idm"]) else "✗",
+            "Confidence":      conf,
             "Status":          status,
         })
- 
     return results
- 
- 
+
+
 # ---------------------------------------------------------
-# EXCEL EXPORT
+# Excel export
 # ---------------------------------------------------------
- 
+
 def export_excel(df):
     df = df.copy()
     for col in df.columns:
         if pd.api.types.is_numeric_dtype(df[col]):
-            df[col] = (pd.to_numeric(df[col], errors="coerce")
-                         .replace([np.inf, -np.inf], np.nan).fillna(0))
+            df[col] = pd.to_numeric(df[col], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0)
         else:
             df[col] = df[col].fillna("").astype(str)
- 
-    buffer = io.BytesIO()
-    wb = xlsxwriter.Workbook(buffer, {"nan_inf_to_errors": True, "in_memory": True})
- 
-    KKC_GREEN = "#5ba632"
-    hdr  = wb.add_format({"bold": True, "bg_color": KKC_GREEN, "font_color": "#ffffff",
-                           "font_name": "Calibri", "font_size": 11,
-                           "valign": "vcenter", "align": "center"})
-    base = wb.add_format({"font_name": "Calibri", "font_size": 10, "valign": "vcenter"})
-    num_f= wb.add_format({"font_name": "Calibri", "font_size": 10, "valign": "vcenter",
-                           "num_format": "₹#,##0.00"})
-    ok_f = wb.add_format({"font_name": "Calibri", "font_size": 10,
-                           "font_color": KKC_GREEN, "bold": True, "valign": "vcenter"})
-    mi_f = wb.add_format({"font_name": "Calibri", "font_size": 10,
-                           "font_color": "#d13030", "bold": True, "valign": "vcenter"})
-    mm_f = wb.add_format({"font_name": "Calibri", "font_size": 10,
-                           "font_color": "#e07b00", "bold": True, "valign": "vcenter"})
-    du_f = wb.add_format({"font_name": "Calibri", "font_size": 10,
-                           "font_color": "#b8860b", "bold": True, "valign": "vcenter"})
- 
+
+    buf = io.BytesIO()
+    wb  = xlsxwriter.Workbook(buf, {"nan_inf_to_errors": True, "in_memory": True})
+    G   = "#5ba632"
+
+    hdr  = wb.add_format({"bold":True,"bg_color":G,"font_color":"#fff","font_name":"Calibri","font_size":11,"valign":"vcenter","align":"center"})
+    base = wb.add_format({"font_name":"Calibri","font_size":10,"valign":"vcenter"})
+    numf = wb.add_format({"font_name":"Calibri","font_size":10,"valign":"vcenter","num_format":"₹#,##0.00"})
+    ok_f = wb.add_format({"font_name":"Calibri","font_size":10,"font_color":G,       "bold":True,"valign":"vcenter"})
+    mi_f = wb.add_format({"font_name":"Calibri","font_size":10,"font_color":"#d13030","bold":True,"valign":"vcenter"})
+    mm_f = wb.add_format({"font_name":"Calibri","font_size":10,"font_color":"#e07b00","bold":True,"valign":"vcenter"})
+    du_f = wb.add_format({"font_name":"Calibri","font_size":10,"font_color":"#b8860b","bold":True,"valign":"vcenter"})
+
     ws = wb.add_worksheet("Vouching Results")
-    ws.set_tab_color(KKC_GREEN)
-    ws.set_row(0, 24)
-    ws.hide_gridlines(2)
- 
-    col_widths = {"Report ID": 20, "Register Amount": 18, "Document Amount": 18,
-                  "Difference": 14, "Vendor": 24, "Category": 16,
-                  "Matched File": 34, "ID Match": 10, "Confidence": 12, "Status": 22}
+    ws.set_tab_color(G); ws.set_row(0, 24); ws.hide_gridlines(2)
+    widths = {"Report ID":20,"Register Amount":18,"Document Amount":18,"Difference":14,
+              "Vendor":24,"Category":16,"Matched File":34,"ID Match":10,"Confidence":12,"Status":22}
     for ci, col in enumerate(df.columns):
-        ws.set_column(ci, ci, col_widths.get(col, 16))
+        ws.set_column(ci, ci, widths.get(col, 16))
         ws.write(0, ci, col, hdr)
- 
-    status_ci  = list(df.columns).index("Status")         if "Status"          in df.columns else -1
-    reg_amt_ci = list(df.columns).index("Register Amount") if "Register Amount" in df.columns else -1
- 
+
+    sc_i = list(df.columns).index("Status")          if "Status"          in df.columns else -1
+    ra_i = list(df.columns).index("Register Amount") if "Register Amount" in df.columns else -1
+    sfmt_map = {"MATCHED":ok_f,"MISSING_DOC":mi_f,"AMOUNT_MISMATCH":mm_f,"DUPLICATE_RECEIPT":du_f}
+
     for ri in range(len(df)):
-        status = str(df.iloc[ri].get("Status", ""))
-        sfmt = {"MATCHED": ok_f, "MISSING_DOC": mi_f, "AMOUNT_MISMATCH": mm_f, "DUPLICATE_RECEIPT": du_f}.get(status, base)
+        sfmt = sfmt_map.get(str(df.iloc[ri].get("Status","")), base)
         for ci in range(len(df.columns)):
             raw = df.iloc[ri, ci]
-            fmt = sfmt if ci == status_ci else (num_f if ci == reg_amt_ci else base)
+            fmt = sfmt if ci == sc_i else (numf if ci == ra_i else base)
             if isinstance(raw, (int, np.integer)):
                 ws.write_number(ri+1, ci, int(raw), fmt)
             elif isinstance(raw, (float, np.floating)):
                 v = float(raw)
-                ws.write_string(ri+1, ci, "", fmt) if (np.isnan(v) or np.isinf(v)) else ws.write_number(ri+1, ci, v, fmt)
+                (ws.write_string if (np.isnan(v) or np.isinf(v)) else ws.write_number)(ri+1, ci, "" if (np.isnan(v) or np.isinf(v)) else v, fmt)
             else:
                 ws.write_string(ri+1, ci, str(raw) if raw is not None else "", fmt)
- 
+
     sw = wb.add_worksheet("Summary")
-    sw.set_tab_color("#a8d870")
-    sw.set_column(0, 0, 28); sw.set_column(1, 1, 16)
-    sw.hide_gridlines(2)
- 
-    t_fmt = wb.add_format({"font_name": "Calibri", "font_size": 15, "bold": True, "font_color": "#1c2b1c"})
-    l_fmt = wb.add_format({"font_name": "Calibri", "font_size": 11, "font_color": "#7a8e7a"})
-    v_fmt = wb.add_format({"font_name": "Calibri", "font_size": 11, "bold": True, "font_color": "#1c2b1c"})
-    g_fmt = wb.add_format({"font_name": "Calibri", "font_size": 11, "bold": True, "font_color": KKC_GREEN})
- 
-    sw.write(0, 0, "KKC Vouching Report — Summary", t_fmt)
-    sw.write(1, 0, f"KKC & Associates LLP  ·  Generated: {datetime.now().strftime('%d %b %Y  %H:%M')}", l_fmt)
- 
+    sw.set_tab_color("#a8d870"); sw.set_column(0,0,28); sw.set_column(1,1,16); sw.hide_gridlines(2)
+    tf = wb.add_format({"font_name":"Calibri","font_size":15,"bold":True,"font_color":"#1c2b1c"})
+    lf = wb.add_format({"font_name":"Calibri","font_size":11,"font_color":"#7a8e7a"})
+    vf = wb.add_format({"font_name":"Calibri","font_size":11,"bold":True,"font_color":"#1c2b1c"})
+    gf = wb.add_format({"font_name":"Calibri","font_size":11,"bold":True,"font_color":G})
+
+    sw.write(0,0,"KKC Vouching Report — Summary", tf)
+    sw.write(1,0,f"KKC & Associates LLP  ·  {datetime.now().strftime('%d %b %Y  %H:%M')}", lf)
+
     total    = len(df)
-    matched  = int((df["Status"] == "MATCHED").sum())
-    missing  = int((df["Status"] == "MISSING_DOC").sum())
-    mismatch = int((df["Status"] == "AMOUNT_MISMATCH").sum())
-    dup      = int((df["Status"] == "DUPLICATE_RECEIPT").sum())
-    rate     = round(matched / total * 100, 1) if total else 0.0
- 
-    for i, (lbl, val, fmt) in enumerate([
-        ("Total Entries",      total,    v_fmt),
-        ("Matched",            matched,  g_fmt),
-        ("Amount Mismatches",  mismatch, v_fmt),
-        ("Missing Documents",  missing,  v_fmt),
-        ("Duplicate Receipts", dup,      v_fmt),
-        ("Match Rate (%)",     rate,     g_fmt),
+    matched  = int((df["Status"]=="MATCHED").sum())
+    missing  = int((df["Status"]=="MISSING_DOC").sum())
+    mismatch = int((df["Status"]=="AMOUNT_MISMATCH").sum())
+    dup      = int((df["Status"]=="DUPLICATE_RECEIPT").sum())
+    rate     = round(matched/total*100,1) if total else 0.0
+
+    for i,(lbl,val,fmt) in enumerate([
+        ("Total Entries",total,vf),("Matched",matched,gf),
+        ("Amount Mismatches",mismatch,vf),("Missing Documents",missing,vf),
+        ("Duplicate Receipts",dup,vf),("Match Rate (%)",rate,gf),
     ]):
-        sw.write(i+3, 0, lbl, l_fmt)
-        sw.write_number(i+3, 1, float(val), fmt)
- 
-    wb.close(); buffer.seek(0)
-    return buffer.read()
- 
- 
-# ---------------------------------------------------------
-# PAGE HEADER (KKC styled)
-# ---------------------------------------------------------
- 
+        sw.write(i+3,0,lbl,lf); sw.write_number(i+3,1,float(val),fmt)
+
+    wb.close(); buf.seek(0)
+    return buf.read()
+
+
+# =========================================================
+# UI LAYOUT
+# =========================================================
+
+# ── Top header (KKC branded) ──────────────────────────────
 st.markdown("""
-<div class="vt-header">
-    <div class="vt-topstrip">
-        <span>📞 +91 22 6143 7333</span>
-        <span class="vt-topstrip-sep">|</span>
-        <span>✉ info@kkcllp.in</span>
-        <span class="vt-topstrip-sep">|</span>
-        <span>Vouching Tool — Internal Audit Suite</span>
+<div class="kkc-topstrip">
+    <span>📞 +91 22 6143 7333</span>
+    <span style="opacity:0.4">|</span>
+    <span>✉ info@kkcllp.in</span>
+    <span style="opacity:0.4">|</span>
+    <span>Vouching Tool — Internal Audit Suite</span>
+</div>
+<div class="kkc-navbar">
+    <div>
+        <div class="kkc-brand-name">kkc &amp; associates llp</div>
+        <div class="kkc-brand-tag">Chartered Accountants</div>
+        <div class="kkc-brand-fmr">(Formerly Khimji Kunverji &amp; Co LLP)</div>
     </div>
-    <div class="vt-navbar" style="padding-left:0.5rem;padding-right:0.5rem">
-        <div class="vt-brand">
-            <div class="vt-brand-name">kkc &amp; associates llp</div>
-            <div class="vt-brand-tag">Chartered Accountants</div>
-            <div class="vt-brand-former">(Formerly Khimji Kunverji &amp; Co LLP)</div>
-        </div>
-        <div class="vt-nav-divider"></div>
-        <div>
-            <div class="vt-tool-badge">🔍 Vouching Engine</div>
-            <div class="vt-tool-sub">Expense Audit &amp; Receipt Matching</div>
-        </div>
-        <div class="vt-status-pill">
-            <div class="vt-status-dot"></div>
-            Session Active
-        </div>
+    <div class="kkc-divider-v"></div>
+    <div>
+        <div class="kkc-tool-badge">🔍 Vouching Engine</div>
+        <div class="kkc-tool-sub">Expense Audit &amp; Receipt Matching</div>
     </div>
+    <div class="kkc-pill"><span class="kkc-dot"></span>Session Active</div>
 </div>
 """, unsafe_allow_html=True)
- 
+
+# ── Info box ──────────────────────────────────────────────
 st.markdown("""
-<div class="vt-infobox">
+<div class="kkc-infobox">
     <span style="font-size:16px;flex-shrink:0">ℹ</span>
-    <span>
-        Upload an <strong>Expense Register</strong> (.xlsx) and one or more
-        <strong>Receipts / Invoices</strong> (PDF, PNG, JPG).
-        The engine matches each entry by <strong>Invoice ID → Vendor → Amount</strong>.
-        <strong>AMOUNT_MISMATCH</strong> flags entries where a document was found but amounts differ —
-        discrepancies are never silently passed as matched.
-    </span>
+    <span>Upload an <strong>Expense Register</strong> (.xlsx) and one or more
+    <strong>Receipts / Invoices</strong> (PDF, PNG, JPG).
+    Matching priority: <strong>Invoice ID → Vendor → Amount</strong>.
+    <strong>AMOUNT_MISMATCH</strong> flags entries where a document was found
+    but amounts differ — discrepancies are never silently passed as matched.</span>
 </div>
 """, unsafe_allow_html=True)
- 
- 
-# ---------------------------------------------------------
-# UPLOAD
-# ---------------------------------------------------------
- 
-st.markdown('<div class="vt-section">Document Intake</div>', unsafe_allow_html=True)
+
+# ── Upload ────────────────────────────────────────────────
+st.markdown('<div class="kkc-section">Document Intake</div>', unsafe_allow_html=True)
 col1, col2 = st.columns(2, gap="medium")
- 
+
 with col1:
-    st.markdown('<div class="vt-upload-label">Expense Register <span class="badge">XLSX</span></div>', unsafe_allow_html=True)
-    register = st.file_uploader("exp_reg", type=["xlsx"], label_visibility="collapsed", key="reg")
+    st.markdown('<div class="kkc-upload-label">Expense Register <span class="kkc-badge">XLSX</span></div>', unsafe_allow_html=True)
+    register = st.file_uploader("Expense Register", type=["xlsx"], label_visibility="collapsed", key="reg")
     if register:
-        st.markdown(f'<div class="vt-file-ok">✓ &nbsp;{register.name}</div>', unsafe_allow_html=True)
- 
+        st.markdown(f'<div class="kkc-file-ok">✓ &nbsp;{register.name}</div>', unsafe_allow_html=True)
+
 with col2:
-    st.markdown('<div class="vt-upload-label">Receipts &amp; Invoices <span class="badge">PDF / PNG / JPG</span></div>', unsafe_allow_html=True)
-    docs = st.file_uploader("receipts", accept_multiple_files=True, label_visibility="collapsed", key="docs")
+    st.markdown('<div class="kkc-upload-label">Receipts &amp; Invoices <span class="kkc-badge">PDF / PNG / JPG</span></div>', unsafe_allow_html=True)
+    docs = st.file_uploader("Receipts", accept_multiple_files=True, label_visibility="collapsed", key="docs")
     if docs:
-        st.markdown(f'<div class="vt-file-ok">✓ &nbsp;{len(docs)} file{"s" if len(docs)!=1 else ""} ready</div>', unsafe_allow_html=True)
- 
- 
-# ---------------------------------------------------------
-# MAIN FLOW
-# ---------------------------------------------------------
- 
+        st.markdown(f'<div class="kkc-file-ok">✓ &nbsp;{len(docs)} file{"s" if len(docs)!=1 else ""} ready</div>', unsafe_allow_html=True)
+
+
+# ── Main flow ─────────────────────────────────────────────
 if register and docs:
- 
-    st.markdown('<div class="vt-section">Register Preview</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="kkc-section">Register Preview</div>', unsafe_allow_html=True)
     df = pd.read_excel(register)
     st.dataframe(df.head(8), use_container_width=True, hide_index=True)
-    st.markdown(f'<div class="vt-preview-meta">{len(df)} entries · {len(df.columns)} columns</div>', unsafe_allow_html=True)
- 
-    st.markdown('<div class="vt-section">Processing Documents</div>', unsafe_allow_html=True)
-    files_data = []
-    prog_text  = st.empty()
-    prog_bar   = st.progress(0)
- 
+    st.markdown(f'<div class="kkc-preview-meta">{len(df)} entries · {len(df.columns)} columns</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="kkc-section">Processing Documents</div>', unsafe_allow_html=True)
+    files_data, prog_text, prog_bar = [], st.empty(), st.progress(0)
+
     for i, f in enumerate(docs):
         prog_text.markdown(
-            f'<div class="vt-proc-label">Extracting → <strong>{f.name}</strong> [{i+1}/{len(docs)}]</div>',
-            unsafe_allow_html=True
-        )
+            f'<div class="kkc-proc-label">Extracting → <strong>{f.name}</strong> [{i+1}/{len(docs)}]</div>',
+            unsafe_allow_html=True)
         files_data.append(process_file(f.read(), f.name))
-        prog_bar.progress((i + 1) / len(docs))
- 
-    prog_text.markdown('<div class="vt-proc-done">✓ &nbsp;All documents processed successfully</div>', unsafe_allow_html=True)
-    st.markdown('<div class="vt-divider"></div>', unsafe_allow_html=True)
- 
-    btn_col, _ = st.columns([1, 4])
-    with btn_col:
+        prog_bar.progress((i+1)/len(docs))
+
+    prog_text.markdown('<div class="kkc-proc-done">✓ All documents processed successfully</div>', unsafe_allow_html=True)
+    st.markdown('<div class="kkc-divider"></div>', unsafe_allow_html=True)
+
+    bc, _ = st.columns([1, 4])
+    with bc:
         run = st.button("🔍  Run Vouching Analysis")
- 
+
     if run:
         with st.spinner("Matching expense entries to documents…"):
             results = run_vouching(df, files_data)
             rdf     = pd.DataFrame(results)
- 
-        n_matched  = int((rdf.Status == "MATCHED").sum())
-        n_missing  = int((rdf.Status == "MISSING_DOC").sum())
-        n_mismatch = int((rdf.Status == "AMOUNT_MISMATCH").sum())
-        n_dup      = int((rdf.Status == "DUPLICATE_RECEIPT").sum())
-        total      = len(rdf)
-        rate       = round(n_matched / total * 100) if total else 0
- 
-        st.markdown('<div class="vt-section">Summary</div>', unsafe_allow_html=True)
+
+        nm  = int((rdf.Status=="MATCHED").sum())
+        nmi = int((rdf.Status=="MISSING_DOC").sum())
+        nmm = int((rdf.Status=="AMOUNT_MISMATCH").sum())
+        nd  = int((rdf.Status=="DUPLICATE_RECEIPT").sum())
+        tot = len(rdf)
+        rt  = round(nm/tot*100) if tot else 0
+
+        st.markdown('<div class="kkc-section">Summary</div>', unsafe_allow_html=True)
         st.markdown(f"""
-        <div class="vt-metrics">
-            <div class="vt-metric matched">
-                <div class="vt-metric-label">Matched</div>
-                <div class="vt-metric-value">{n_matched}</div>
-                <div class="vt-metric-sub">{rate}% match rate</div>
+        <div class="kkc-metrics">
+            <div class="kkc-metric matched">
+                <div class="kkc-metric-label">Matched</div>
+                <div class="kkc-metric-value">{nm}</div>
+                <div class="kkc-metric-sub">{rt}% match rate</div>
             </div>
-            <div class="vt-metric mismatch">
-                <div class="vt-metric-label">Amount Mismatch</div>
-                <div class="vt-metric-value">{n_mismatch}</div>
-                <div class="vt-metric-sub">Doc found, amount differs</div>
+            <div class="kkc-metric mismatch">
+                <div class="kkc-metric-label">Amount Mismatch</div>
+                <div class="kkc-metric-value">{nmm}</div>
+                <div class="kkc-metric-sub">Doc found, amount differs</div>
             </div>
-            <div class="vt-metric missing">
-                <div class="vt-metric-label">Missing Documents</div>
-                <div class="vt-metric-value">{n_missing}</div>
-                <div class="vt-metric-sub">No receipt found</div>
+            <div class="kkc-metric missing">
+                <div class="kkc-metric-label">Missing Documents</div>
+                <div class="kkc-metric-value">{nmi}</div>
+                <div class="kkc-metric-sub">No receipt found</div>
             </div>
-            <div class="vt-metric duplicate">
-                <div class="vt-metric-label">Duplicates</div>
-                <div class="vt-metric-value">{n_dup}</div>
-                <div class="vt-metric-sub">Reused receipts</div>
+            <div class="kkc-metric duplicate">
+                <div class="kkc-metric-label">Duplicates</div>
+                <div class="kkc-metric-value">{nd}</div>
+                <div class="kkc-metric-sub">Reused receipts</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
- 
-        if n_mismatch > 0:
-            rows = rdf[rdf["Status"] == "AMOUNT_MISMATCH"]
-            table_rows = ""
-            for _, r in rows.iterrows():
-                table_rows += f"""
-                <tr>
-                    <td>{r["Report ID"]}</td>
-                    <td class="val-reg">₹{r["Register Amount"]:,.2f}</td>
-                    <td class="val-doc">{r["Document Amount"]}</td>
-                    <td class="val-diff">{r["Difference"]}</td>
-                    <td style="color:#6b3a00">{r["Matched File"]}</td>
-                </tr>"""
+
+        if nmm > 0:
+            rows = rdf[rdf["Status"]=="AMOUNT_MISMATCH"]
+            trows = "".join(
+                f"<tr><td>{r['Report ID']}</td>"
+                f"<td style='color:#d13030;font-weight:700'>₹{r['Register Amount']:,.2f}</td>"
+                f"<td style='color:#5ba632;font-weight:700'>{r['Document Amount']}</td>"
+                f"<td style='color:#e07b00;font-weight:700'>{r['Difference']}</td>"
+                f"<td>{r['Matched File']}</td></tr>"
+                for _, r in rows.iterrows()
+            )
             st.markdown(f"""
-            <div class="vt-alert warn">
-                <span style="font-size:18px;flex-shrink:0">⚠</span>
-                <div style="width:100%">
-                    <strong>{n_mismatch} amount mismatch{"es" if n_mismatch>1 else ""} require manual review</strong>
-                    — a supporting document was identified, but the amounts do not agree.
-                    <table class="mismatch-table">
-                        <thead><tr>
-                            <th>Report ID</th><th>Register Amount</th>
-                            <th>Document Amount</th><th>Difference</th><th>Matched File</th>
-                        </tr></thead>
-                        <tbody>{table_rows}</tbody>
-                    </table>
-                </div>
+            <div class="kkc-alert-warn">
+                <strong>⚠ {nmm} amount mismatch{"es" if nmm>1 else ""} require manual review</strong>
+                — a supporting document was identified but amounts do not agree.
+                <table class="kkc-mismatch-table">
+                    <thead><tr>
+                        <th>Report ID</th><th>Register Amount</th>
+                        <th>Document Amount</th><th>Difference</th><th>Matched File</th>
+                    </tr></thead>
+                    <tbody>{trows}</tbody>
+                </table>
             </div>
             """, unsafe_allow_html=True)
- 
-        st.markdown('<div class="vt-section">Detailed Results</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="vt-result-head">Vouching Report <span class="count-tag">{total} entries</span></div>', unsafe_allow_html=True)
- 
+
+        st.markdown('<div class="kkc-section">Detailed Results</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="kkc-result-head">Vouching Report <span class="kkc-count-tag">{tot} entries</span></div>', unsafe_allow_html=True)
+
         def style_status(val):
-            return {
-                "MATCHED":           "color:#5ba632;font-weight:800",
-                "MISSING_DOC":       "color:#d13030;font-weight:800",
-                "AMOUNT_MISMATCH":   "color:#e07b00;font-weight:800",
-                "DUPLICATE_RECEIPT": "color:#b8860b;font-weight:800",
-            }.get(val, "")
- 
-        st.dataframe(
-            rdf.style.applymap(style_status, subset=["Status"]),
-            use_container_width=True, hide_index=True
-        )
- 
-        st.markdown('<div class="vt-divider"></div>', unsafe_allow_html=True)
-        dl_col, ts_col = st.columns([1, 3])
-        with dl_col:
+            return {"MATCHED":"color:#5ba632;font-weight:800","MISSING_DOC":"color:#d13030;font-weight:800",
+                    "AMOUNT_MISMATCH":"color:#e07b00;font-weight:800","DUPLICATE_RECEIPT":"color:#b8860b;font-weight:800"}.get(val,"")
+
+        st.dataframe(rdf.style.applymap(style_status, subset=["Status"]), use_container_width=True, hide_index=True)
+
+        st.markdown('<div class="kkc-divider"></div>', unsafe_allow_html=True)
+        dc, tc = st.columns([1, 3])
+        with dc:
             ts = datetime.now().strftime("%Y%m%d_%H%M")
             st.download_button(
                 label="⬇  Download Audit Report (.xlsx)",
                 data=export_excel(rdf),
-                file_name=f"KKC_vouching_report_{ts}.xlsx",
+                file_name=f"KKC_vouching_{ts}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-        with ts_col:
+        with tc:
             st.markdown(
-                f'<div class="vt-timestamp">KKC & Associates LLP &nbsp;·&nbsp; '
+                f'<div class="kkc-timestamp">KKC &amp; Associates LLP &nbsp;·&nbsp; '
                 f'Generated {datetime.now().strftime("%d %b %Y · %H:%M")} &nbsp;·&nbsp; '
-                f'{total} entries &nbsp;·&nbsp; 2 sheets: Results + Summary</div>',
-                unsafe_allow_html=True
-            )
- 
+                f'{tot} entries &nbsp;·&nbsp; 2 sheets: Results + Summary</div>',
+                unsafe_allow_html=True)
+
 else:
     st.markdown("""
-    <div class="vt-empty">
-        <div class="vt-empty-icon">🔍</div>
-        <div class="vt-empty-title">Ready to begin vouching</div>
-        <div class="vt-empty-sub">Upload your expense register and receipts above to start</div>
+    <div class="kkc-empty">
+        <div class="kkc-empty-icon">🔍</div>
+        <div class="kkc-empty-title">Ready to begin vouching</div>
+        <div class="kkc-empty-sub">Upload your expense register and receipts above to start</div>
     </div>
     """, unsafe_allow_html=True)
- 
+
 st.markdown("""
-<div class="vt-footer">
-    <strong>kkc &amp; associates llp</strong> &nbsp;·&nbsp; Chartered Accountants &nbsp;·&nbsp;
-    (Formerly Khimji Kunverji &amp; Co LLP) &nbsp;·&nbsp; Internal Audit Suite v4.0
+<div class="kkc-footer">
+    <strong style="color:#5ba632">kkc &amp; associates llp</strong> &nbsp;·&nbsp;
+    Chartered Accountants &nbsp;·&nbsp; (Formerly Khimji Kunverji &amp; Co LLP) &nbsp;·&nbsp;
+    Internal Audit Suite v4.0
 </div>
 """, unsafe_allow_html=True)
- 
