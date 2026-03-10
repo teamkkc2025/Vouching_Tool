@@ -1,6 +1,7 @@
 import io
 import os
 import re
+import toml
 from datetime import datetime
  
 import streamlit as st
@@ -11,12 +12,11 @@ import pytesseract
  
 from PIL import Image, ImageEnhance
 import xlsxwriter
-
+ 
+ 
 # ---------------------------------------------------------
 # TESSERACT
 # ---------------------------------------------------------
-
-import toml
 
 try:
     _cfg_path = os.path.join(os.path.dirname(__file__), "config.toml")
@@ -502,23 +502,8 @@ with st.sidebar:
         </div>
     </div>
     """, unsafe_allow_html=True)
- 
- 
-# ---------------------------------------------------------
-# TESSERACT
-# ---------------------------------------------------------
- 
-try:
-    if os.name == "nt":
-        path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-        if os.path.exists(path):
-            pytesseract.pytesseract.tesseract_cmd = path
-    pytesseract.get_tesseract_version()
-    OCR_OK = True
-except:
-    OCR_OK = False
- 
- 
+
+
 # ---------------------------------------------------------
 # OCR
 # ---------------------------------------------------------
@@ -1092,4 +1077,3 @@ st.markdown("""
     (Formerly Khimji Kunverji &amp; Co LLP) &nbsp;·&nbsp; Internal Audit Suite v4.0
 </div>
 """, unsafe_allow_html=True)
- 
