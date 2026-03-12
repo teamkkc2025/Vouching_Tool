@@ -404,52 +404,101 @@ def preprocess(img):
 
 
 # ---------------------------------------------------------
-# Amount extraction (prioritised grand-total first)
+# Amount extraction — grand total priority
+#
+# Priority 1 (highest): Balance Due / Grand Total / Total INR / Amount Due
+#                        — these always reflect the final payable incl. all taxes
+# Priority 2           : Plain "Total …" lines that are NOT sub-totals
+# Priority 3           : Currency-prefixed amounts (₹ / INR / Rs)
+# Priority 4 (lowest)  : Bare numbers
+#
+# Sub Total, Taxable Value, CGST, SGST, rate columns → explicitly excluded
+# Tie-breaking rule    : among same-priority candidates keep the LARGEST value
+#                        (grand total incl. GST is always ≥ any line item)
 # ---------------------------------------------------------
 
-def extract_amounts_with_context(text):
-    raw = text.replace(",", "")
-    results = []
+# Patterns that signal a SUB-total or tax line — we skip these
+_SUBTOTAL_PAT = re.compile(
+    r"(?:sub[\s\-]?total|taxable\s+value|taxable\s+amount|"
+    r"cgst|sgst|igst|ugst|cess|tax\s+amount|basic\s+amount|"
+    r"rate\s+per|qty|quantity|hsn)",
+    re.IGNORECASE
+)
 
-    p1 = [
-        r"(?:grand\s+total|total\s+amount|invoice\s+total|amount\s+due|net\s+payable)[\s:₹Rs\.]*(\d+(?:\.\d{1,2})?)",
-        r"(?:total)[^\n₹\d]{0,8}(?:₹|rs\.?|inr)?\s*(\d{4,}(?:\.\d{1,2})?)",
-    ]
-    for pat in p1:
-        for m in re.findall(pat, raw, re.IGNORECASE):
-            try:
-                v = float(m)
-                if 1 <= v <= 10_000_000:
-                    results.append({"amount": round(v, 2), "priority": 1})
-            except Exception:
-                pass
+def _is_subtotal_line(line: str) -> bool:
+    return bool(_SUBTOTAL_PAT.search(line))
 
-    p2 = [
-        r"(?:sub\s*total|taxable|basic|consultancy|professional\s+fees?)[\s:₹Rs\.]*(\d+(?:\.\d{1,2})?)",
-        r"(?:₹|rs\.?|inr)\s*(\d+(?:\.\d{1,2})?)",
-    ]
-    for pat in p2:
-        for m in re.findall(pat, raw, re.IGNORECASE):
-            try:
-                v = float(m)
-                if 1 <= v <= 10_000_000:
-                    results.append({"amount": round(v, 2), "priority": 2})
-            except Exception:
-                pass
+def _parse_num(s: str) -> float | None:
+    try:
+        v = float(s.replace(",", ""))
+        return round(v, 2) if 1 <= v <= 10_000_000 else None
+    except Exception:
+        return None
 
-    for m in re.findall(r"\b(\d{4,7}(?:\.\d{1,2})?)\b", raw):
-        try:
-            v = float(m)
-            if 1 <= v <= 10_000_000:
-                results.append({"amount": round(v, 2), "priority": 3})
-        except Exception:
-            pass
+def extract_amounts_with_context(text: str) -> list[dict]:
+    results: list[dict] = []
 
-    seen = {}
+    # ── Pass 1: line-by-line scan ────────────────────────────────────────
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        skip = _is_subtotal_line(line)
+        line_clean = line.replace(",", "")
+
+        # Priority 1 — explicit grand-total keywords
+        if re.search(
+            r"(?:balance\s+due|grand\s+total|total\s+(?:inr|amount|payable|due)|"
+            r"amount\s+(?:due|payable)|net\s+(?:payable|amount)|invoice\s+total|"
+            r"amount\s+chargeable)",
+            line_clean, re.IGNORECASE
+        ):
+            for m in re.findall(r"(\d{3,}(?:\.\d{1,2})?)", line_clean):
+                v = _parse_num(m)
+                if v:
+                    results.append({"amount": v, "priority": 1})
+
+        # Priority 2 — "Total" line that is NOT a sub-total / tax line
+        elif re.search(r"\btotal\b", line_clean, re.IGNORECASE) and not skip:
+            for m in re.findall(r"(\d{3,}(?:\.\d{1,2})?)", line_clean):
+                v = _parse_num(m)
+                if v:
+                    results.append({"amount": v, "priority": 2})
+
+        # Priority 3 — currency-prefixed values on non-subtotal lines
+        elif not skip:
+            for m in re.findall(
+                r"(?:₹|inr|rs\.?)\s*(\d{3,}(?:\.\d{1,2})?)",
+                line_clean, re.IGNORECASE
+            ):
+                v = _parse_num(m)
+                if v:
+                    results.append({"amount": v, "priority": 3})
+
+    # ── Pass 2: bare numbers (priority 4, fallback only) ────────────────
+    raw_all = text.replace(",", "")
+    for m in re.findall(r"\b(\d{4,7}(?:\.\d{1,2})?)\b", raw_all):
+        v = _parse_num(m)
+        if v:
+            results.append({"amount": v, "priority": 4})
+
+    # ── Dedup: per amount keep lowest priority; tie → keep largest amount
+    #    Then for each priority bucket keep the single largest amount
+    #    (grand total incl. taxes > subtotal, so max = correct)
+    seen: dict[float, dict] = {}
     for r in results:
         k = r["amount"]
         if k not in seen or r["priority"] < seen[k]["priority"]:
             seen[k] = r
+
+    # Among priority-1 entries pick the largest (most complete total)
+    p1 = [r for r in seen.values() if r["priority"] == 1]
+    if p1:
+        best_p1 = max(p1, key=lambda x: x["amount"])
+        # Return only priority-1 best + all other priorities for fallback
+        other = [r for r in seen.values() if r["priority"] != 1]
+        return [best_p1] + other
+
     return list(seen.values())
 
 
@@ -523,9 +572,11 @@ def process_file(fb, name):
 TOLERANCE = 0.50
 
 def best_amount(doc):
+    """Return grand-total amount. Priority 1 wins; tie-break = largest value."""
     if not doc["amounts_detail"]:
         return None
-    return sorted(doc["amounts_detail"], key=lambda x: x["priority"])[0]["amount"]
+    ranked = sorted(doc["amounts_detail"], key=lambda x: (x["priority"], -x["amount"]))
+    return ranked[0]["amount"]
 
 def amount_result(reg_amt, doc):
     try:
