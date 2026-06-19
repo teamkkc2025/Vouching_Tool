@@ -1163,7 +1163,7 @@ if register and docs:
             }.get(val, "")
 
         st.dataframe(
-            rdf.style.applymap(style_status, subset=["Status"]),
+            rdf.style.map(style_status, subset=["Status"]),
             use_container_width=True, hide_index=True)
 
         st.markdown('<div class="kkc-divider"></div>', unsafe_allow_html=True)
